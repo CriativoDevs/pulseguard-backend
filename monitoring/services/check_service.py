@@ -4,6 +4,13 @@ from typing import Dict
 
 import requests
 
+try:
+    from pythonping import ping  # type: ignore
+
+    _PYTHONPING_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _PYTHONPING_AVAILABLE = False
+
 from monitoring.models import Server
 
 
@@ -19,8 +26,7 @@ class HealthCheckService:
         if server.protocol == "tcp":
             return self._check_tcp(server)
         if server.protocol == "icmp":
-            # Simplified ICMP placeholder; production should use a proper ping library
-            return self._check_tcp(server)
+            return self._check_icmp(server)
         return {
             "status": "error",
             "status_code": None,
@@ -82,4 +88,58 @@ class HealthCheckService:
                 "status_code": None,
                 "response_time": None,
                 "error_message": str(exc),
+            }
+
+    def _check_icmp(self, server: Server) -> Dict[str, object]:
+        timeout = server.timeout or self.default_timeout
+        count = 4
+        if not _PYTHONPING_AVAILABLE:
+            return {
+                "status": "error",
+                "status_code": None,
+                "response_time": None,
+                "error_message": "pythonping not available",
+                "transmitted": None,
+                "received": None,
+                "loss": None,
+                "avg": None,
+            }
+        try:
+            result = ping(
+                server.host,
+                count=count,
+                timeout=timeout / 1000 if timeout > 100 else timeout,
+            )  # pythonping expects seconds
+            transmitted = result.stats_packets_sent
+            received = result.stats_packets_returned
+            loss = (
+                int(round((1 - (received / transmitted)) * 100)) if transmitted else 100
+            )
+            avg = float(result.rtt_avg_ms) if hasattr(result, "rtt_avg_ms") else None
+            status = (
+                "success"
+                if loss == 0
+                else ("failure" if loss >= server.loss_rate_threshold else "degraded")
+            )
+            # Use avg RTT as response_time proxy
+            return {
+                "status": status,
+                "status_code": None,
+                "response_time": avg,
+                "error_message": "" if status == "success" else f"loss {loss}%",
+                "transmitted": transmitted,
+                "received": received,
+                "loss": loss,
+                "avg": avg,
+            }
+        except Exception as exc:  # pragma: no cover
+            return {
+                "status": "error",
+                "status_code": None,
+                "response_time": None,
+                "error_message": str(exc),
+                "transmitted": None,
+                "received": None,
+                "loss": None,
+                "avg": None,
             }

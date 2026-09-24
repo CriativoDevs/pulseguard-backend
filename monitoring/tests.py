@@ -65,6 +65,69 @@ class HealthCheckServiceTests(TestCase):
             timeout=2,
         )
 
+    class FakeHealthService:
+        def __init__(self, data):
+            self._data = data
+
+        def run_check(self, server):
+            return self._data
+
+    class ICMPThresholdTest(TestCase):
+        def setUp(self):
+            self.org = Organization.objects.create(
+                name="Org", owner=self._create_user()
+            )
+            self.server = Server.objects.create(
+                name="icmp-server",
+                organization=self.org,
+                protocol="icmp",
+                host="127.0.0.1",
+                port=0,
+                loss_rate_threshold=50,
+                status="active",
+            )
+
+        def _create_user(self):
+            from django.contrib.auth import get_user_model
+
+            return get_user_model().objects.create_user(
+                username="tester", email="tester@example.com", password="pass"
+            )
+
+        def test_icmp_down_on_high_loss(self):
+            data = {
+                "status": "degraded",
+                "status_code": None,
+                "response_time": 10.0,
+                "error_message": "",
+                "transmitted": 4,
+                "received": 1,
+                "loss": 75,
+                "avg": 10.0,
+            }
+            run_all_checks(
+                service=FakeHealthService(data), queryset=Server.objects.all()
+            )
+            status_obj = ServerStatus.objects.get(server=self.server)
+            self.assertEqual(status_obj.status, "down")
+
+        def test_icmp_degraded_on_low_loss(self):
+            data = {
+                "status": "degraded",
+                "status_code": None,
+                "response_time": 10.0,
+                "error_message": "",
+                "transmitted": 4,
+                "received": 3,
+                "loss": 25,
+                "avg": 10.0,
+            }
+            run_all_checks(
+                service=FakeHealthService(data), queryset=Server.objects.all()
+            )
+            status_obj = ServerStatus.objects.get(server=self.server)
+            self.assertEqual(status_obj.status, "degraded")
+
     @mock.patch("monitoring.services.check_service.requests.get")
     def test_check_http_success(self, mock_get):
         mock_resp = mock.Mock(status_code=200)
@@ -457,3 +520,179 @@ class StatusConsumerTests(TransactionTestCase):
             await communicator.disconnect()
 
         async_to_sync(run)()
+
+
+class RunChecksViewTest(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin_user = User.objects.create_user(
+            username="admin", email="admin@example.com", password="pass"
+        )
+        self.member_user = User.objects.create_user(
+            username="member", email="member@example.com", password="pass"
+        )
+        self.org = Organization.objects.create(name="Org", owner=self.admin_user)
+        Membership.objects.create(
+            user=self.admin_user, organization=self.org, role="owner"
+        )
+        Membership.objects.create(
+            user=self.member_user, organization=self.org, role="member"
+        )
+        self.server = Server.objects.create(
+            name="test-server",
+            organization=self.org,
+            protocol="https",
+            host="example.com",
+            port=443,
+            path="/health",
+            status="active",
+        )
+
+    def test_run_checks_unauthenticated_fails(self):
+        url = reverse("run-checks")
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_run_checks_member_fails(self):
+        url = reverse("run-checks")
+        self.client.force_authenticate(user=self.member_user)
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @mock.patch("monitoring.tasks.check_runner.run_all_checks")
+    def test_run_checks_admin_succeeds(self, mock_run):
+        mock_run.return_value = [(self.server.id, "success")]
+        url = reverse("run-checks")
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        mock_run.assert_called_once()
+
+    @mock.patch("monitoring.tasks.check_runner.run_all_checks")
+    def test_run_checks_creates_ping_results(self, mock_run):
+        def fake_run(queryset=None):
+            for server in queryset:
+                PingResult.objects.create(
+                    server=server,
+                    status="success",
+                    response_time=100.0,
+                    status_code=200,
+                    error_message="",
+                    check_timestamp=timezone.now(),
+                )
+                status_obj, _ = ServerStatus.objects.get_or_create(server=server)
+                status_obj.status = "up"
+                status_obj.save()
+            return [(server.id, "success") for server in queryset]
+
+        mock_run.side_effect = fake_run
+        url = reverse("run-checks")
+        self.client.force_authenticate(user=self.admin_user)
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(PingResult.objects.filter(server=self.server).exists())
+        status_obj = ServerStatus.objects.get(server=self.server)
+        self.assertEqual(status_obj.status, "up")
+
+
+class SchedulerEndpointTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.staff_user = User.objects.create_user(
+            username="staff", email="staff@example.com", password="pass"
+        )
+        self.staff_user.is_staff = True
+        self.staff_user.save()
+
+        self.normal_user = User.objects.create_user(
+            username="user", email="user@example.com", password="pass"
+        )
+
+    def test_start_scheduler_requires_staff(self):
+        url = reverse("scheduler-status")
+
+        self.client.force_authenticate(user=self.normal_user)
+        resp = self.client.post(url, {"action": "start"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    @mock.patch("monitoring.scheduler.start_scheduler")
+    def test_start_scheduler_staff(self, mock_start):
+        url = reverse("scheduler-status")
+        self.client.force_authenticate(user=self.staff_user)
+
+        resp = self.client.post(url, {"action": "start"})
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        mock_start.assert_called_once()
+
+    @mock.patch("monitoring.scheduler.stop_scheduler")
+    def test_stop_scheduler_staff(self, mock_stop):
+        url = reverse("scheduler-status")
+        self.client.force_authenticate(user=self.staff_user)
+
+        resp = self.client.post(url, {"action": "stop"})
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        mock_stop.assert_called_once()
+
+
+class RunChecksToStreamIntegrationTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin_user = User.objects.create_user(
+            username="admin-int", email="admin-int@example.com", password="pass"
+        )
+        self.admin_user.is_staff = True
+        self.admin_user.save()
+
+        self.org = Organization.objects.create(name="OrgInt", owner=self.admin_user)
+        Membership.objects.create(
+            user=self.admin_user, organization=self.org, role="owner"
+        )
+        self.server = Server.objects.create(
+            name="int-server",
+            organization=self.org,
+            protocol="https",
+            host="integration.example.com",
+            port=443,
+            path="/health",
+            status="active",
+        )
+
+    @mock.patch("monitoring.tasks.check_runner.run_all_checks")
+    def test_run_checks_populates_status_stream(self, mock_run):
+        def fake_run(queryset=None, **kwargs):
+            results = []
+            for server in queryset:
+                ping = PingResult.objects.create(
+                    server=server,
+                    status="success",
+                    response_time=42.0,
+                    status_code=200,
+                    error_message="",
+                    check_timestamp=timezone.now(),
+                )
+                status_obj, _ = ServerStatus.objects.get_or_create(server=server)
+                status_obj.status = "up"
+                status_obj.last_check = ping.check_timestamp
+                status_obj.save(update_fields=["status", "last_check"])
+                results.append((server.id, "success"))
+            return results
+
+        mock_run.side_effect = fake_run
+
+        self.client.force_authenticate(user=self.admin_user)
+        since = quote((timezone.now() - timedelta(seconds=1)).isoformat())
+
+        run_resp = self.client.post(reverse("run-checks"))
+        self.assertEqual(run_resp.status_code, status.HTTP_200_OK)
+
+        stream_resp = self.client.get(reverse("status-stream") + f"?since={since}")
+        body = b"".join(list(stream_resp.streaming_content))
+
+        self.assertIn(b"retry: 5000", body)
+        self.assertIn(b"event: status", body)
+        self.assertIn(b"event: ping", body)
+        self.assertIn(str(self.server.id).encode(), body)

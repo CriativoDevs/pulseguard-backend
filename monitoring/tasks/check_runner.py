@@ -36,6 +36,10 @@ def run_all_checks(
             response_time=data.get("response_time"),
             status_code=data.get("status_code"),
             error_message=data.get("error_message"),
+            transmitted=data.get("transmitted"),
+            received=data.get("received"),
+            loss=data.get("loss"),
+            avg=data.get("avg"),
             check_timestamp=now,
         )
 
@@ -51,11 +55,18 @@ def run_all_checks(
         else:
             status_obj.consecutive_failures += 1
             status_obj.last_down = now
-            status_obj.message = data.get("error_message") or data["status"]
-            if status_obj.consecutive_failures >= status_obj.failure_threshold:
-                status_obj.status = "down"
+            # Prefer ping loss info when available
+            if data.get("loss") is not None:
+                status_obj.message = f"loss {data['loss']}%"
+                status_obj.status = (
+                    "down" if data["loss"] >= server.loss_rate_threshold else "degraded"
+                )
             else:
-                status_obj.status = "degraded"
+                status_obj.message = data.get("error_message") or data["status"]
+                if status_obj.consecutive_failures >= status_obj.failure_threshold:
+                    status_obj.status = "down"
+                else:
+                    status_obj.status = "degraded"
 
         status_obj.save()
 

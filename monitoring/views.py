@@ -1,11 +1,18 @@
 import json
-from django.http import StreamingHttpResponse
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.views import View
 from rest_framework import permissions, status as drf_status, viewsets
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+try:
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+except ImportError:
+    JWTAuthentication = None
 
 from .models import (
     Membership,
@@ -124,14 +131,38 @@ class RunChecksView(APIView):
         return Response({"count": len(results), "results": results})
 
 
-class ServerStatusStreamView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class ServerStatusStreamView(View):
+    """
+    Plain Django View (not DRF) so that DRF content negotiation is
+    completely bypassed — this endpoint streams text/event-stream, not JSON.
+    Authentication is handled manually via the JWT Bearer token.
+    """
+
+    def _authenticate(self, request):
+        """Returns (user, None) or raises HttpResponse on failure."""
+        auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token_str = auth_header[7:]
+        if JWTAuthentication is None:
+            return None
+        try:
+            jwt_auth = JWTAuthentication()
+            validated = jwt_auth.get_validated_token(token_str)
+            return jwt_auth.get_user(validated)
+        except (InvalidToken, TokenError):
+            return None
 
     def get(self, request):
-        status_filter = request.query_params.get("status")
-        server_ids = request.query_params.get("server_id")
-        since_param = request.query_params.get("since")
-        ping_limit = int(request.query_params.get("limit", 50))
+        # Manual JWT authentication (bypassing DRF)
+        user = self._authenticate(request)
+        if user is None:
+            return JsonResponse({"detail": "Authentication credentials were not provided."}, status=401)
+
+        status_filter = request.GET.get("status")
+        server_ids = request.GET.get("server_id")
+        since_param = request.GET.get("since")
+        ping_limit = int(request.GET.get("limit", 50))
 
         if since_param and " " in since_param:
             # Handle unencoded plus signs turned into spaces
@@ -145,7 +176,7 @@ class ServerStatusStreamView(APIView):
             # Inform client to retry after 5s if connection drops
             yield "retry: 5000\n\n"
             qs = ServerStatus.objects.select_related("server").filter(
-                server__organization_id__in=_organization_ids(request.user)
+                server__organization_id__in=_organization_ids(user)
             )
             if status_filter:
                 qs = qs.filter(status=status_filter)
@@ -174,7 +205,7 @@ class ServerStatusStreamView(APIView):
                 yield f"event: status\ndata: {json.dumps(payload)}\n\n"
 
             pings = PingResult.objects.select_related("server").filter(
-                server__organization_id__in=_organization_ids(request.user)
+                server__organization_id__in=_organization_ids(user)
             )
             if server_ids:
                 ids = [sid for sid in server_ids.split(",") if sid]
@@ -192,6 +223,10 @@ class ServerStatusStreamView(APIView):
                     "status_code": ping.status_code,
                     "check_timestamp": ping.check_timestamp.isoformat(),
                     "error_message": ping.error_message,
+                    "transmitted": ping.transmitted,
+                    "received": ping.received,
+                    "loss": ping.loss,
+                    "avg": ping.avg,
                 }
                 yield f"event: ping\ndata: {json.dumps(payload)}\n\n"
 
@@ -203,6 +238,7 @@ class ServerStatusStreamView(APIView):
         )
         response["Cache-Control"] = "no-cache"
         return response
+
 
 
 class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -282,3 +318,37 @@ class BillingView(APIView):
         return Response(
             {"detail": "Invalid action"}, status=drf_status.HTTP_400_BAD_REQUEST
         )
+
+
+class SchedulerStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        """Get scheduler status and list of scheduled jobs."""
+        from monitoring.scheduler import is_scheduler_running, get_scheduler_jobs
+
+        return Response(
+            {
+                "running": is_scheduler_running(),
+                "jobs": get_scheduler_jobs(),
+            }
+        )
+
+    def post(self, request):
+        """Start/stop scheduler (admin only)."""
+        from monitoring.scheduler import start_scheduler, stop_scheduler
+
+        if not request.user.is_staff:
+            raise PermissionDenied("Only staff can manage scheduler")
+
+        action = request.data.get("action")
+        if action == "start":
+            start_scheduler()
+            return Response({"status": "Scheduler started"})
+        elif action == "stop":
+            stop_scheduler()
+            return Response({"status": "Scheduler stopped"})
+        else:
+            return Response(
+                {"detail": "Invalid action"}, status=drf_status.HTTP_400_BAD_REQUEST
+            )

@@ -8,6 +8,7 @@ from monitoring.views import (
     OrganizationViewSet,
     PingResultViewSet,
     RunChecksView,
+    SchedulerStatusView,
     ServerStatusStreamView,
     ServerStatusViewSet,
     ServerViewSet,
@@ -29,6 +30,7 @@ urlpatterns = [
     path("", include(router.urls)),
     path("auth/", include("authentication.urls")),
     path("checks/run/", RunChecksView.as_view(), name="run-checks"),
+    path("scheduler/", SchedulerStatusView.as_view(), name="scheduler-status"),
     path("events/status/", ServerStatusStreamView.as_view(), name="status-stream"),
     path("billing/", BillingView.as_view(), name="billing"),
 ]

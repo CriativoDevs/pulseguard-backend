@@ -65,6 +65,11 @@ class Server(TimeStampedModel):
         default=300, help_text="Check interval in seconds"
     )
     timeout = models.IntegerField(default=10, help_text="Timeout in seconds")
+    # Thresholds
+    loss_rate_threshold = models.IntegerField(
+        default=50,
+        help_text="Maximum acceptable packet loss percentage before flagging issues",
+    )
 
     # Status
     status = models.CharField(
@@ -117,6 +122,20 @@ class PingResult(TimeStampedModel):
         null=True, blank=True, help_text="Response time in milliseconds"
     )
     status_code = models.IntegerField(null=True, blank=True)
+
+    # Ping specifics (ICMP)
+    transmitted = models.IntegerField(null=True, blank=True)
+    received = models.IntegerField(null=True, blank=True)
+    loss = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Packet loss percentage (0-100) for ICMP checks",
+    )
+    avg = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Average round-trip time in ms for ICMP checks",
+    )
 
     # Error details
     error_message = models.TextField(blank=True, null=True)
