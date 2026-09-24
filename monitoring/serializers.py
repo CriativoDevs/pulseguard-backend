@@ -12,6 +12,7 @@ from .models import (
 
 class ServerSerializer(serializers.ModelSerializer):
     full_url = serializers.SerializerMethodField(read_only=True)
+    monitoring_status = serializers.SerializerMethodField(read_only=True)
     organization = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
@@ -28,6 +29,7 @@ class ServerSerializer(serializers.ModelSerializer):
             "check_interval",
             "timeout",
             "status",
+            "monitoring_status",
             "tags",
             "notify_on_failure",
             "notify_recovery",
@@ -35,10 +37,20 @@ class ServerSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at", "full_url", "organization"]
+        read_only_fields = [
+            "created_at",
+            "updated_at",
+            "full_url",
+            "monitoring_status",
+            "organization",
+        ]
 
     def get_full_url(self, obj):
         return obj.full_url
+
+    def get_monitoring_status(self, obj):
+        current_status = getattr(obj, "current_status", None)
+        return current_status.status if current_status else "unknown"
 
 
 class PingResultSerializer(serializers.ModelSerializer):

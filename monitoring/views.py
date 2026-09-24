@@ -60,7 +60,11 @@ class ServerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         org_ids = _organization_ids(self.request.user)
-        return Server.objects.filter(organization_id__in=org_ids).order_by("name")
+        return (
+            Server.objects.select_related("current_status")
+            .filter(organization_id__in=org_ids)
+            .order_by("name")
+        )
 
     def perform_create(self, serializer):
         org = _ensure_default_org(self.request.user)
@@ -157,7 +161,9 @@ class ServerStatusStreamView(View):
         # Manual JWT authentication (bypassing DRF)
         user = self._authenticate(request)
         if user is None:
-            return JsonResponse({"detail": "Authentication credentials were not provided."}, status=401)
+            return JsonResponse(
+                {"detail": "Authentication credentials were not provided."}, status=401
+            )
 
         status_filter = request.GET.get("status")
         server_ids = request.GET.get("server_id")
@@ -238,7 +244,6 @@ class ServerStatusStreamView(View):
         )
         response["Cache-Control"] = "no-cache"
         return response
-
 
 
 class OrganizationViewSet(viewsets.ReadOnlyModelViewSet):

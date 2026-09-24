@@ -228,6 +228,7 @@ class MonitoringAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         first = response.data["results"][0]  # type: ignore[attr-defined]
         self.assertEqual(first["full_url"], "https://example.com:443/health")
+        self.assertEqual(first["monitoring_status"], "up")
 
     def test_create_server(self):
         url = reverse("server-list")
