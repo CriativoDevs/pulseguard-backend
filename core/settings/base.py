@@ -223,17 +223,6 @@ LOGGING = {
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
-# WebSocket configuration
-ASGI_APPLICATION = "core.asgi.application"
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [os.getenv("REDIS_URL", "redis://localhost:6379")],
-        },
-    },
-}
-
 # Email Notification Settings
 EMAIL_NOTIFICATIONS_ENABLED = (
     os.getenv("EMAIL_NOTIFICATIONS_ENABLED", "False") == "True"

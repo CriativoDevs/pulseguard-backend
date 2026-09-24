@@ -99,7 +99,11 @@ class Server(TimeStampedModel):
     @property
     def full_url(self):
         """Generate full URL for the server"""
-        return f"{self.protocol}://{self.host}:{self.port}{self.path}"
+        host = self.host.strip().rstrip("/")
+        path = self.path or "/"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self.protocol}://{host}:{self.port}{path}"
 
 
 class PingResult(TimeStampedModel):
