@@ -13,6 +13,7 @@ from monitoring.models import (
     Membership,
     NotificationConfig,
     Organization,
+    PingResult,
     Server,
     ServerStatus,
 )
@@ -224,6 +225,7 @@ class MetricsEndpointTests(TestCase):
     def test_response_times_metrics(self):
         """Test response times metrics endpoint."""
         url = reverse("metrics-response-times")
+        self.assertEqual(url, "/api/metrics/response-times/")
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -233,6 +235,16 @@ class MetricsEndpointTests(TestCase):
 
     def test_failures_metrics(self):
         """Test failures metrics endpoint."""
+        from django.utils import timezone
+
+        PingResult.objects.create(
+            server=self.server1,
+            status="failure",
+            status_code=503,
+            error_message="Service unavailable",
+            check_timestamp=timezone.now(),
+        )
+
         url = reverse("metrics-failures")
         response = self.client.get(url)
 
@@ -241,3 +253,5 @@ class MetricsEndpointTests(TestCase):
         self.assertIn("total_failures", data)
         self.assertIn("by_type", data)
         self.assertIn("recent_failures", data)
+        self.assertEqual(data["total_failures"], 1)
+        self.assertEqual(data["by_type"]["failure"], 1)

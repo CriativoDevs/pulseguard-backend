@@ -40,7 +40,9 @@ class MetricsViewSet(viewsets.ViewSet):
 
         total_checks_24h = recent_checks.count()
         successful_checks = recent_checks.filter(status="success").count()
-        failed_checks = recent_checks.filter(status__in=["timeout", "error"]).count()
+        failed_checks = recent_checks.filter(
+            status__in=["failure", "timeout", "error"]
+        ).count()
 
         success_rate = (
             (successful_checks / total_checks_24h * 100) if total_checks_24h > 0 else 0
@@ -122,7 +124,7 @@ class MetricsViewSet(viewsets.ViewSet):
 
         return Response({"servers": uptime_data})
 
-    @action(detail=False, methods=["get"])
+    @action(detail=False, methods=["get"], url_path="response-times")
     def response_times(self, request):
         """Get response time statistics."""
         # Get time range from query params (default: last 24 hours)
@@ -187,7 +189,7 @@ class MetricsViewSet(viewsets.ViewSet):
         org_ids = _org_ids(request.user)
         failures = PingResult.objects.filter(
             check_timestamp__gte=last_7d,
-            status__in=["timeout", "error"],
+            status__in=["failure", "timeout", "error"],
             server__organization_id__in=org_ids,
         )
 
@@ -225,6 +227,7 @@ class MetricsViewSet(viewsets.ViewSet):
                 "by_type": {
                     "timeout": status_breakdown.get("timeout", 0),
                     "error": status_breakdown.get("error", 0),
+                    "failure": status_breakdown.get("failure", 0),
                 },
                 "recent_failures": list(recent_failures),
                 "top_failing_servers": list(top_failing),
